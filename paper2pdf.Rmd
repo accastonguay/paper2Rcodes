@@ -1,0 +1,1805 @@
+---
+title: 'Paper 2: Integrated modelling of nature-based solutions uptake'
+author: ''
+date: ''
+output:
+  pdf_document: 
+    fig_caption: false
+  word_document: default
+bibliography: refs2.bib
+---
+
+
+```{r echo = FALSE}
+knitr::opts_chunk$set(echo = FALSE,message = FALSE, warning = FALSE)
+```
+
+```{r setup}
+library("sf", verbose = FALSE)
+library(rgdal, verbose = FALSE)
+library(dplyr, verbose = FALSE)  
+library(ggplot2, verbose = FALSE)
+library(scales, verbose = FALSE)
+library(ggmap, verbose = FALSE)
+library(rgeos, verbose = FALSE)
+library("RPostgreSQL", verbose = FALSE)
+library(gridExtra)
+library(GGally)
+
+theme_set(theme_bw())
+```
+
+## **Objectives**
+
+**1. Develop a model to explore decisions rules and strategies used by policy-makers to install nature-based solutions in an urban context.**
+
+
+**2. Apply the model to replicate the uptake of existing systems installed by a city council, from 2005-2012**
+
+  + Number of WSUDs installed
+  + Location of WSUDs
+  + Treatment capacity by WSUD type
+  
+**3. Assess the variability of economic value of pollution removal based on the avoided cost method**
+
+  + Using stormwater offset rate
+
+**4. Assess the sensitivity of performance and values to key policy drivers**
+
+  + Using Monte Carlo samplings for distributions of budget, stormwater offset rate and TN removal target 
+
+\newpage
+
+## **Methods**
+
+```{r}
+pw <- {
+  "rejudo01"
+}
+
+drv <- dbDriver("PostgreSQL")
+con <- dbConnect(drv, dbname = "complex_agents",
+                 host = "www.dance4water.org", port = 5432,
+                 user = "postgres", password = pw)
+rm(pw) # removes the password
+
+# dbListFields(con, "kgn_council_v10")
+
+
+data_council <- dbGetQuery(con, 'SELECT year, suitability, scenario_id, budget, gaz_lga,ogc_fid,  total_n_removed, total_benefits, total_costs, raingarden ,wetland, pond, total_pv_costs, total_pv_benefits, total_npv,  decision_rule,cum_wetland_area, cum_pond_area, cum_rg_area,treated_from_wsuds, sum_treated FROM kgn_council_v10')
+invisible(dbDisconnect(con))
+
+ggplot()+
+  geom_col(data = filter(data_council, decision_rule == 1, suitability == 1, scenario_id == 1),
+           aes(x = year, y = budget/1000))+
+  scale_x_continuous(name = '', breaks = 2005:2015)+
+  ylab("Annual budget for WSUD ('000 AUD)")+
+  theme_classic()
+```
+
+\newpage
+
+## **Results**
+
+### 2. Replicating uptake
+
+#### 2.1. Simulations with Observed budget
+
+*2.1.1. Cumulative number of WSUDs installed with observed budget*
+
+```{r}
+# pw <- {
+#   "rejudo01"
+# }
+# 
+# drv <- dbDriver("PostgreSQL")
+# con <- dbConnect(drv, dbname = "complex_agents",
+#                  host = "www.dance4water.org", port = 5432,
+#                  user = "postgres", password = pw)
+# rm(pw) # removes the password
+# 
+# # dbListFields(con, "kgn_council_v10")
+# 
+# 
+# data_council <- dbGetQuery(con, 'SELECT year, suitability, scenario_id, budget, gaz_lga,ogc_fid,  total_n_removed, total_benefits, total_costs, raingarden ,wetland, pond, total_pv_costs, total_pv_benefits, total_npv,  decision_rule,cum_wetland_area, cum_pond_area, cum_rg_area,treated_from_wsuds, sum_treated FROM kgn_council_v10')
+# invisible(dbDisconnect(con))
+
+# data_council %>%  count(scenario_id, suitability,decision_rule) %>%
+#   arrange(scenario_id)
+
+
+wsud_cum_nmr <- select(data_council, year, decision_rule, scenario_id ,suitability  , total_npv )%>%
+  group_by( year, decision_rule,suitability)%>%
+  summarise(n = n(),mean = mean(total_npv),SE=sd(total_npv)/sqrt(n()))
+
+
+subset_mod <- select(data_council, decision_rule, year, scenario_id,suitability, raingarden,wetland,pond)
+melt.subset <- reshape2::melt(subset_mod, id=c("year", "decision_rule","scenario_id", "suitability"))
+
+melt.subset$suitability <- recode(melt.subset$suitability, 
+            "1" = "UrbanBeats",
+            "2" = "Random")
+
+# melt.subset$rule <- as.character(melt.subset$rule)
+
+melt.subset$decision_rule <- recode(melt.subset$decision_rule, 
+            "1" = "Rule 1",
+            "2" = "Rule 2",
+            "3" = "Rule 3",
+            "4" = "Rule 4")
+
+
+y <- c(2005,2005,2006,2006,2006,2006,2007,2007,2007,2007,2007,2007,2008,2009,2009,2012,2012)
+y_Df <- as.data.frame(y)
+y_c <- dplyr::count(x = y_Df,y)
+y <- c(2010,2011)
+n <-c(0,0)
+ndf <- data.frame(y = y,n = n)
+
+tb <- rbind(y_c,ndf)
+tb$y <- as.integer(tb$y)
+
+t <- arrange(tb,y)
+
+t$cum <- cumsum(t$n)
+
+nmr_dat <- group_by(melt.subset, year, decision_rule,suitability,variable)%>%
+  summarise(n = n(),med = median(value),y05=quantile(value, 0.05), y95=quantile(value, 0.95))
+
+nmr_dat$variable <- recode(nmr_dat$variable, 
+            "pond" = "Pond",
+            "raingarden" = "Raingarden",
+            "wetland" = "Wetland")
+
+ggplot(data = nmr_dat)+
+  geom_line(aes(y=med, x=year, colour = variable))+
+  geom_ribbon(aes(ymin=y05, ymax=y95, x=year, fill=variable), alpha = 0.5) +
+        facet_grid(suitability~decision_rule)+
+  geom_line(aes(x=year, y = y05, color = variable,linetype = "5th-95th")) +
+  geom_line(aes(x=year, y = y95, color = variable,linetype = "5th-95th"))+
+  geom_point(data = t,  aes(x = y, y = cum, shape = "Raingarden"), color = "#27AE60")+
+  scale_shape_manual(name='Observed:', 
+                      values=c("Raingarden" = 16)) +
+  scale_colour_manual(name='', 
+                      values=c("Pond" = "#73C6B6",
+                        "Raingarden" = "#27AE60",
+                               "Wetland" = "#2980B9")) +
+  scale_fill_manual(name='', 
+                      values=c("Pond" = "#73C6B6",
+                        "Raingarden" = "#27AE60",
+                               "Wetland" = "#2980B9"))+
+  scale_x_continuous(breaks = 2005:2015)+
+  labs(y = "Cumulative number of systems installed")+
+    xlab('')+
+  theme(legend.margin=margin(t=-0.5, r=0, b=0.5, l=0, unit="cm"),
+        # plot.margin=unit(c(1, 1, -0.5, 0.5), units="line"),
+        panel.grid.minor = element_blank(),
+        legend.position="bottom",
+    legend.title.align = 0,
+    legend.box = "vertical",
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        strip.background = element_blank(),
+        strip.text = element_text(face = "bold"))+
+    guides(linetype = FALSE,
+           fill = guide_legend(title = "Modelled:"),
+           color = guide_legend(title = "Modelled:"))
+```
+
+\newpage
+
+
+*2.1.2. Treatment capacity with observed budget*
+
+```{r}
+year <- 	c(2005,	2006,	2007,	2008,	2009,	2010,	2011,	2012)
+# sum_treated<-	c(3376.62,	17337.7,	142208,	148701,	166948,	166948,	166948,	197273)
+sum_treated<-	c(2362,	12128.6,	99482,	104025,	116789, 116789,	116789,	138003)
+
+obs_sumtreated <- data.frame(year = year, treated = sum_treated)
+
+  
+  
+treatment_dat <- select(data_council, year, decision_rule, scenario_id ,suitability  , treated_from_wsuds )%>%
+  group_by( year, decision_rule,suitability)%>%
+  summarise(n = n(),med = median(treated_from_wsuds),y05=quantile(treated_from_wsuds, 0.05), y95=quantile(treated_from_wsuds, 0.95))
+
+treatment_dat$suitability <- recode(treatment_dat$suitability, 
+            "1" = "UrbanBeats",
+            "2" = "Random")
+
+treatment_dat$decision_rule <- recode(treatment_dat$decision_rule, 
+            "1" = "Rule 1",
+            "2" = "Rule 2",
+            "3" = "Rule 3",
+            "4" = "Rule 4")
+
+ggplot(data = treatment_dat)+
+  geom_line(aes(y=med, x=year, colour = "Modelled range", fill = "Modelled range",linetype = "Modelled range"))+
+  geom_ribbon(aes(ymin=y05, ymax=y95, x=year, fill="Modelled range"), alpha = 0.5) +
+  geom_line(aes(x=year, y = y05), color = "grey70") +
+  geom_line(aes(x=year, y = y95), color = "grey70")+
+
+  geom_point(data = obs_sumtreated,
+             aes(x = year, y = treated, color = "Observed",
+                 fill="Observed",linetype = "Observed"))+
+    facet_grid(suitability~decision_rule)+
+
+  scale_colour_manual(name='',
+                      values=c(
+                               "Modelled range" = "blue",
+                               "Observed" = "red")) +
+  scale_fill_manual(name = '',
+                    values=c("Modelled range" = "grey70",
+                             "Observed" = "white"))+
+  scale_linetype_manual(name = '',
+                        values=c(
+                                 "Modelled range" = "solid",
+                                 "Observed" = "blank"))+
+      scale_x_continuous(breaks = 2005:2015)+
+  labs(y = expression(paste("Cumulative treatment capacity (",
+  m^2,
+  " of EIA)", sep="")))+
+    xlab('')+
+  theme(
+    legend.margin=margin(t=-0.5, r=0, b=0.5, l=0, unit="cm"),
+        # plot.margin=unit(c(1, 1, -0.5, 0.5), units="line"),
+        panel.grid.minor = element_blank(),
+        legend.position="bottom",
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        strip.background = element_blank(),
+        strip.text = element_text(face = "bold"))+
+    guides(colour = guide_legend(override.aes = list(shape=c(NA,16))))
+```
+
+\newpage
+
+#### 2.2 Simulations with observed expenditure
+
+2.2.1. Costs range
+
+```{r}
+pw <- {
+  "rejudo01"
+}
+
+# loads the PostgreSQL driver
+drv <- dbDriver("PostgreSQL")
+# creates a connection to the postgres database
+# note that "con" will be used later in each connection to the database
+con <- dbConnect(drv, dbname = "complex_agents",
+                 host = "www.dance4water.org", port = 5432,
+                 user = "postgres", password = pw)
+rm(pw) # removes the password
+
+# check for the table
+# dbExistsTable(con, "monash_sim_wsud")
+
+wsuds = st_read_db(con, "kgn_wsud_v10", query = "select * from wsud_points")
+invisible(dbDisconnect(con))
+wdf <- as.data.frame(wsuds)
+
+wdf$suitability <- as.character(wdf$suitability)
+wdf$suitability <- recode(wdf$suitability,
+            "1" = "UrbanBeats",
+            "2" = "Random")
+
+wdf$rule <- as.character(wdf$rule)
+
+wdf$rule <- recode(wdf$rule, 
+            "1" = "Rule 1",
+            "2" = "Rule 2",
+            "3" = "Rule 3",
+            "4" = "Rule 4")
+
+year = c(2005	,2005	,2006	,2006,	2006,	2006,	2007,	2007,	2007,	2007,	2007,	2007,	2007	,2008,	2009,	2009	,2009	,2012,	2012)
+cost = c(14000.00,	6000.00,	70000.00,	30000.00,	18000.00,	5000.00,	45000.00,	100000.00	,50000.00,	200000.00,	60000.00,	40000.00,	152683.99,	70000.00,	130000.00,	50000.00,	30000.00,	70000.00,	60000.00)
+type= c("Observed costs",	"Observed costs",	"Observed costs",	"Observed costs",	"Observed costs",	"Observed costs",	"Observed costs",	"Observed costs",	"Observed costs",	"Observed costs",	"Observed costs",	"Observed costs",	"Estimated costs","Observed costs","Observed costs",	"Observed costs",	"Observed costs",	"Observed costs",	"Observed costs")
+
+obs_cost <- data.frame(year = year, cost = cost, type = type)
+
+
+ggplot() +
+  # geom_boxplot(aes(fill = as.factor(suitability)),outlier.size=0.5, outlier.stroke = 0.2, lwd=0.1, alpha = 0.6) +
+  geom_point(data = obs_cost, aes(x = as.character(year), y = cost, shape = type), color = "red")+
+  labs(x = "", y = "Installation costs (AUD)") +
+  # facet_grid(.~rule)+
+  # scale_fill_manual(name = '',
+  #                   values=c("Random" = "#2c7bb6",
+  #                            "UrbanBeats" = "#d7191c"))+
+  scale_shape_manual(name = '',
+                     values=c(16,17))+
+  theme(legend.margin=margin(t=-1, r=0, b=-0, l=0, unit="cm"),
+        legend.direction = "vertical",
+        # plot.margin=unit(c(0, 0, -0.5, 0), units="line"),
+        panel.grid.minor = element_blank(),
+        legend.position="bottom",
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        strip.background = element_blank(),
+        strip.text.x = element_text(face = "bold"))+
+  guides(linetype = FALSE)
+```
+
+\newpage
+
+*2.2.2. Annual observed expenditures VS budget*
+
+```{r}
+annual_costs <- group_by(obs_cost, year)%>%
+  summarise(sum=sum(cost))
+
+y <- c(2010,2011)
+sum <- c(0,0)
+all_data <- rbind(annual_costs, data.frame(year = y, sum=sum))
+all_data <- arrange(all_data,year)
+all_data$cumsum <- cumsum(all_data$sum)
+all_data$type <- "costs"
+
+budget <- filter(data_council, suitability == 1, decision_rule == 1, scenario_id == 1) %>%
+  select(year, budget)
+
+colnames(budget)[2] <- "sum"
+budget$cumsum <- cumsum(budget$sum)
+budget$type <- "budget"
+
+all_data2 <- rbind(all_data, budget)
+
+ggplot(data = all_data2)+
+  geom_line(aes(x = year, y = cumsum/1000, color = type), size = 1.05)+
+  scale_color_manual(name = '',
+              
+  values = c("#2c7bb6", "#d7191c"),
+  breaks = c("budget", "costs"),
+  labels = c("Budget", "Expenditure"))+
+  scale_x_continuous(name = '', breaks = 2005:2015)+
+  ylab("Cumulative budget and observed expenditures ('000 AUD)")+
+  theme_classic()+
+    theme(        panel.grid.minor = element_blank(),
+        axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+\newpage
+
+*2.2.3 Number of WSUDs with observed expenditures instead of budget*
+
+```{r}
+
+pw <- {
+  "rejudo01"
+}
+
+drv <- dbDriver("PostgreSQL")
+con <- dbConnect(drv, dbname = "complex_agents",
+                 host = "www.dance4water.org", port = 5432,
+                 user = "postgres", password = pw)
+rm(pw) # removes the password
+
+# dbListFields(con, "kgn_council_test2")
+
+# data_council_sens <- dbGetQuery(con, 'SELECT year, suitability, scenario_id, budget, gaz_lga,ogc_fid,  total_n_removed, total_benefits, total_costs, raingarden ,wetland, pond, total_pv_costs, total_pv_benefits, total_npv,  decision_rule,cum_wetland_area, cum_pond_area, cum_rg_area, sum_treated, offset_scenario, expected_removal, budget FROM kgn_council_sensitivity')
+data_council_cost <- dbGetQuery(con, 'SELECT year, decision_rule, suitability, scenario_id, budget,sum_treated,raingarden ,wetland, pond, cum_wetland_area, cum_pond_area, cum_rg_area FROM kgn_council_costsreset')
+invisible(dbDisconnect(con))
+
+subset_mod <- select(data_council_cost, decision_rule, year, scenario_id,suitability, raingarden,wetland,pond)
+melt.subset <- reshape2::melt(subset_mod, id=c("year", "decision_rule","scenario_id", "suitability"))
+
+melt.subset$suitability <- recode(melt.subset$suitability, 
+            "1" = "UrbanBeats",
+            "2" = "Random")
+
+# melt.subset$rule <- as.character(melt.subset$rule)
+
+melt.subset$decision_rule <- recode(melt.subset$decision_rule, 
+            "1" = "Rule 1",
+            "2" = "Rule 2",
+            "3" = "Rule 3",
+            "4" = "Rule 4")
+
+
+y <- c(2005,2005,2006,2006,2006,2006,2007,2007,2007,2007,2007,2007,2008,2009,2009,2012,2012)
+y_Df <- as.data.frame(y)
+y_c <- dplyr::count(x = y_Df,y)
+y <- c(2010,2011)
+n <-c(0,0)
+ndf <- data.frame(y = y,n = n)
+
+tb <- rbind(y_c,ndf)
+tb$y <- as.integer(tb$y)
+
+t <- arrange(tb,y)
+
+t$cum <- cumsum(t$n)
+
+nmr_dat <- group_by(melt.subset, year, decision_rule,suitability,variable)%>%
+  summarise(n = n(),med = median(value),y05=quantile(value, 0.05), y95=quantile(value, 0.95))
+
+nmr_dat$variable <- recode(nmr_dat$variable, 
+            "pond" = "Pond",
+            "raingarden" = "Raingarden",
+            "wetland" = "Wetland")
+ggplot(data = nmr_dat)+
+  geom_line(aes(y=med, x=year, colour = variable))+
+  geom_ribbon(aes(ymin=y05, ymax=y95, x=year, fill=variable), alpha = 0.5) +
+        facet_grid(suitability~decision_rule)+
+  geom_line(aes(x=year, y = y05, color = variable,linetype = "5th-95th")) +
+  geom_line(aes(x=year, y = y95, color = variable,linetype = "5th-95th"))+
+  geom_point(data = t,  aes(x = y, y = cum, shape = "Raingarden"), color = "#27AE60")+
+  scale_shape_manual(name='Observed:', 
+                      values=c("Raingarden" = 16)) +
+  scale_colour_manual(name='', 
+                      values=c("Pond" = "#73C6B6",
+                        "Raingarden" = "#27AE60",
+                               "Wetland" = "#2980B9")) +
+  scale_fill_manual(name='', 
+                      values=c("Pond" = "#73C6B6",
+                        "Raingarden" = "#27AE60",
+                               "Wetland" = "#2980B9"))+
+  scale_x_continuous(breaks = 2005:2015)+
+  labs(y = "Cumulative number of systems installed")+
+    xlab('')+
+  theme(
+    legend.margin=margin(t=-0.5, r=0, b=0.5, l=0, unit="cm"),
+        # plot.margin=unit(c(1, 1, -0.5, 0.5), units="line"),
+        panel.grid.minor = element_blank(),
+        legend.position="bottom",
+    legend.title.align = 0,
+    legend.box = "vertical",
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        strip.background = element_blank(),
+        strip.text = element_text(face = "bold"))+
+    guides(linetype = FALSE,
+           fill = guide_legend(title = "Modelled:"),
+           color = guide_legend(title = "Modelled:"))
+```
+
+\newpage
+
+*2.2.4 Treatment capacity with observed expenditures instead of budget*
+
+```{r}
+treatment_dat <- select(data_council_cost, year, decision_rule, scenario_id ,suitability, sum_treated )%>%
+  filter(sum_treated > 0 )%>%
+  group_by( year, decision_rule,suitability)%>%
+  summarise(n = n(),med = median(sum_treated),y05=quantile(sum_treated, 0.05), y95=quantile(sum_treated, 0.95))
+
+treatment_dat$suitability <- recode(treatment_dat$suitability, 
+            "1" = "UrbanBeats",
+            "2" = "Random")
+
+treatment_dat$decision_rule <- recode(treatment_dat$decision_rule, 
+            "1" = "Rule 1",
+            "2" = "Rule 2",
+            "3" = "Rule 3",
+            "4" = "Rule 4")
+
+
+ggplot(data = treatment_dat)+
+  geom_line(aes(y=med, x=year, colour = "Modelled range", fill = "Modelled range",linetype = "Modelled range"))+
+  geom_ribbon(aes(ymin=y05, ymax=y95, x=year, fill="Modelled range"), alpha = 0.5) +
+  geom_line(aes(x=year, y = y05), color = "grey70") +
+  geom_line(aes(x=year, y = y95), color = "grey70")+
+  geom_point(data = obs_sumtreated,
+             aes(x = year, y = treated, color = "Observed",
+                 fill="Observed",linetype = "Observed"))+
+    facet_grid(suitability~decision_rule)+
+  scale_colour_manual(name='',
+                      values=c("Modelled range" = "blue",
+                               "Observed" = "red")) +
+  scale_fill_manual(name = '',
+                    values=c("Modelled range" = "grey70",
+                             "Observed" = "white"))+
+  scale_linetype_manual(name = '',
+                        values=c("Modelled range" = "solid",
+                                 "Observed" = "blank"))+
+      scale_x_continuous(breaks = 2005:2015)+
+  labs(y = expression(paste("Cumulative treatment capacity (",
+  m^2," of EIA)", sep="")))+
+    xlab('')+
+  theme(legend.margin=margin(t=-0.5, r=0, b=0.5, l=0, unit="cm"),
+        panel.grid.minor = element_blank(),
+        legend.position="bottom",
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        strip.background = element_blank(),
+        strip.text = element_text(face = "bold"))+
+    guides(colour = guide_legend(override.aes = list(shape=c(NA,16))))
+```
+
+\newpage
+
+#### 2.3 Simulations with Net Present Costs of observed expenditure
+
+*2.3.1. Number of WSUDs with Net Present Costs instead of budget*
+
+```{r}
+pw <- {
+  "rejudo01"
+}
+
+drv <- dbDriver("PostgreSQL")
+con <- dbConnect(drv, dbname = "complex_agents",
+                 host = "www.dance4water.org", port = 5432,
+                 user = "postgres", password = pw)
+rm(pw) # removes the password
+
+# dbListFields(con, "kgn_council_test2")
+
+data_council_cost <- dbGetQuery(con, 'SELECT year, decision_rule, suitability, scenario_id, budget,sum_treated,raingarden ,wetland, pond, cum_wetland_area, cum_pond_area, cum_rg_area FROM kgn_council_pvcosts')
+invisible(dbDisconnect(con))
+
+subset_mod <- select(data_council_cost, decision_rule, year, scenario_id,suitability, raingarden,wetland,pond)
+melt.subset <- reshape2::melt(subset_mod, id=c("year", "decision_rule","scenario_id", "suitability"))
+
+melt.subset$suitability <- recode(melt.subset$suitability, 
+            "1" = "UrbanBeats",
+            "2" = "Random")
+
+# melt.subset$rule <- as.character(melt.subset$rule)
+
+melt.subset$decision_rule <- recode(melt.subset$decision_rule, 
+            "1" = "Rule 1",
+            "2" = "Rule 2",
+            "3" = "Rule 3",
+            "4" = "Rule 4")
+
+
+y <- c(2005,2005,2006,2006,2006,2006,2007,2007,2007,2007,2007,2007,2008,2009,2009,2012,2012)
+y_Df <- as.data.frame(y)
+y_c <- dplyr::count(x = y_Df,y)
+y <- c(2010,2011)
+n <-c(0,0)
+ndf <- data.frame(y = y,n = n)
+
+tb <- rbind(y_c,ndf)
+tb$y <- as.integer(tb$y)
+
+t <- arrange(tb,y)
+
+t$cum <- cumsum(t$n)
+
+nmr_dat <- group_by(melt.subset, year, decision_rule,suitability,variable)%>%
+  summarise(n = n(),med = median(value),y05=quantile(value, 0.05), y95=quantile(value, 0.95))
+
+nmr_dat$variable <- recode(nmr_dat$variable, 
+            "pond" = "Pond",
+            "raingarden" = "Raingarden",
+            "wetland" = "Wetland")
+
+ggplot(data = nmr_dat)+
+  geom_line(aes(y=med, x=year, colour = variable))+
+  geom_ribbon(aes(ymin=y05, ymax=y95, x=year, fill=variable), alpha = 0.5) +
+        facet_grid(suitability~decision_rule)+
+  geom_line(aes(x=year, y = y05, color = variable,linetype = "5th-95th")) +
+  geom_line(aes(x=year, y = y95, color = variable,linetype = "5th-95th"))+
+  geom_point(data = t,  aes(x = y, y = cum, shape = "Raingarden"), color = "#27AE60")+
+  scale_shape_manual(name='Observed:', 
+                      values=c("Raingarden" = 16)) +
+  scale_colour_manual(name='', 
+                      values=c("Pond" = "#73C6B6",
+                        "Raingarden" = "#27AE60",
+                               "Wetland" = "#2980B9")) +
+  scale_fill_manual(name='', 
+                      values=c("Pond" = "#73C6B6",
+                        "Raingarden" = "#27AE60",
+                               "Wetland" = "#2980B9"))+
+  scale_x_continuous(breaks = 2005:2015)+
+  labs(y = "Cumulative number of systems installed")+
+    xlab('')+
+  theme(
+    legend.margin=margin(t=-0.5, r=0, b=0.5, l=0, unit="cm"),
+        # plot.margin=unit(c(1, 1, -0.5, 0.5), units="line"),
+        panel.grid.minor = element_blank(),
+        legend.position="bottom",
+    legend.title.align = 0,
+    legend.box = "vertical",
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        strip.background = element_blank(),
+        strip.text = element_text(face = "bold"))+
+    guides(linetype = FALSE,
+           fill = guide_legend(title = "Modelled:"),
+           color = guide_legend(title = "Modelled:"))
+```
+
+\newpage
+
+*2.3.2 Treatment capacity with Net Present Costs instead of budget*
+
+```{r, pvcosts}
+
+
+treatment_dat <- select(data_council_cost, year, decision_rule, scenario_id ,suitability, sum_treated )%>%
+  filter(sum_treated > 0 )%>%
+  group_by( year, decision_rule,suitability)%>%
+  summarise(n = n(),med = median(sum_treated),y05=quantile(sum_treated, 0.05), y95=quantile(sum_treated, 0.95))
+
+treatment_dat$suitability <- recode(treatment_dat$suitability, 
+            "1" = "UrbanBeats",
+            "2" = "Random")
+
+treatment_dat$decision_rule <- recode(treatment_dat$decision_rule, 
+            "1" = "Rule 1",
+            "2" = "Rule 2",
+            "3" = "Rule 3",
+            "4" = "Rule 4")
+
+ggplot(data = treatment_dat)+
+  geom_line(aes(y=med, x=year, colour = "Modelled range", fill = "Modelled range",linetype = "Modelled range"))+
+  geom_ribbon(aes(ymin=y05, ymax=y95, x=year, fill="Modelled range"), alpha = 0.5) +
+  geom_line(aes(x=year, y = y05), color = "grey70") +
+  geom_line(aes(x=year, y = y95), color = "grey70")+
+  geom_point(data = obs_sumtreated,
+             aes(x = year, y = treated, color = "Observed",
+                 fill="Observed",linetype = "Observed"))+
+    facet_grid(suitability~decision_rule)+
+  scale_colour_manual(name='',
+                      values=c("Modelled range" = "blue",
+                               "Observed" = "red")) +
+  scale_fill_manual(name = '',
+                    values=c("Modelled range" = "grey70",
+                             "Observed" = "white"))+
+  scale_linetype_manual(name = '',
+                        values=c("Modelled range" = "solid",
+                                 "Observed" = "blank"))+
+      scale_x_continuous(breaks = 2005:2015)+
+  labs(y = expression(paste("Cumulative treatment capacity (",
+  m^2," of EIA)", sep="")))+
+    xlab('')+
+  theme(legend.margin=margin(t=-0.5, r=0, b=0.5, l=0, unit="cm"),
+        panel.grid.minor = element_blank(),
+        legend.position="bottom",
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        strip.background = element_blank(),
+        strip.text = element_text(face = "bold"))+
+    guides(colour = guide_legend(override.aes = list(shape=c(NA,16))))
+```
+
+\newpage
+
+#### 2.4 Simulations with Costs of observed expenditure with ewater costs
+
+*2.4.1. Number of WSUDs with Net Present Costs instead of budget*
+
+```{r, eval = FALSE}
+pw <- {
+  "rejudo01"
+}
+
+drv <- dbDriver("PostgreSQL")
+con <- dbConnect(drv, dbname = "complex_agents",
+                 host = "www.dance4water.org", port = 5432,
+                 user = "postgres", password = pw)
+rm(pw) # removes the password
+
+# dbListFields(con, "kgn_council_test2")
+
+data_council_cost <- dbGetQuery(con, 'SELECT year, decision_rule, suitability, scenario_id, budget,sum_treated,raingarden ,wetland, pond, cum_wetland_area, cum_pond_area, cum_rg_area FROM kgn_council_costs2112')
+invisible(dbDisconnect(con))
+
+subset_mod <- select(data_council_cost, decision_rule, year, scenario_id,suitability, raingarden,wetland,pond)
+melt.subset <- reshape2::melt(subset_mod, id=c("year", "decision_rule","scenario_id", "suitability"))
+
+melt.subset$suitability <- recode(melt.subset$suitability, 
+            "1" = "UrbanBeats",
+            "2" = "Random")
+
+# melt.subset$rule <- as.character(melt.subset$rule)
+
+melt.subset$decision_rule <- recode(melt.subset$decision_rule, 
+            "1" = "Rule 1",
+            "2" = "Rule 2",
+            "3" = "Rule 3",
+            "4" = "Rule 4")
+
+
+y <- c(2005,2005,2006,2006,2006,2006,2007,2007,2007,2007,2007,2007,2008,2009,2009,2012,2012)
+y_Df <- as.data.frame(y)
+y_c <- dplyr::count(x = y_Df,y)
+y <- c(2010,2011)
+n <-c(0,0)
+ndf <- data.frame(y = y,n = n)
+
+tb <- rbind(y_c,ndf)
+tb$y <- as.integer(tb$y)
+
+t <- arrange(tb,y)
+
+t$cum <- cumsum(t$n)
+
+nmr_dat <- group_by(melt.subset, year, decision_rule,suitability,variable)%>%
+  summarise(n = n(),med = median(value),y05=quantile(value, 0.05), y95=quantile(value, 0.95))
+
+nmr_dat$variable <- recode(nmr_dat$variable, 
+            "pond" = "Pond",
+            "raingarden" = "Raingarden",
+            "wetland" = "Wetland")
+
+ggplot(data = nmr_dat)+
+  geom_line(aes(y=med, x=year, colour = variable))+
+  geom_ribbon(aes(ymin=y05, ymax=y95, x=year, fill=variable), alpha = 0.5) +
+        facet_grid(suitability~decision_rule)+
+  geom_line(aes(x=year, y = y05, color = variable,linetype = "5th-95th")) +
+  geom_line(aes(x=year, y = y95, color = variable,linetype = "5th-95th"))+
+  geom_point(data = t,  aes(x = y, y = cum, shape = "Raingarden"), color = "#27AE60")+
+  scale_shape_manual(name='Observed:', 
+                      values=c("Raingarden" = 16)) +
+  scale_colour_manual(name='', 
+                      values=c("Pond" = "#73C6B6",
+                        "Raingarden" = "#27AE60",
+                               "Wetland" = "#2980B9")) +
+  scale_fill_manual(name='', 
+                      values=c("Pond" = "#73C6B6",
+                        "Raingarden" = "#27AE60",
+                               "Wetland" = "#2980B9"))+
+  scale_x_continuous(breaks = 2005:2015)+
+  labs(y = "Cumulative number of systems installed")+
+    xlab('')+
+  theme(
+    legend.margin=margin(t=-0.5, r=0, b=0.5, l=0, unit="cm"),
+        # plot.margin=unit(c(1, 1, -0.5, 0.5), units="line"),
+        panel.grid.minor = element_blank(),
+        legend.position="bottom",
+    legend.title.align = 0,
+    legend.box = "vertical",
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        strip.background = element_blank(),
+        strip.text = element_text(face = "bold"))+
+    guides(linetype = FALSE,
+           fill = guide_legend(title = "Modelled:"),
+           color = guide_legend(title = "Modelled:"))
+```
+
+
+
+*2.4.2 Treatment capacity with Net Present Costs instead of budget*
+
+```{r, eval = FALSE}
+
+
+treatment_dat <- select(data_council_cost, year, decision_rule, scenario_id ,suitability, sum_treated )%>%
+  filter(sum_treated > 0 )%>%
+  group_by( year, decision_rule,suitability)%>%
+  summarise(n = n(),med = median(sum_treated),y05=quantile(sum_treated, 0.05), y95=quantile(sum_treated, 0.95))
+
+treatment_dat$suitability <- recode(treatment_dat$suitability, 
+            "1" = "UrbanBeats",
+            "2" = "Random")
+
+treatment_dat$decision_rule <- recode(treatment_dat$decision_rule, 
+            "1" = "Rule 1",
+            "2" = "Rule 2",
+            "3" = "Rule 3",
+            "4" = "Rule 4")
+
+ggplot(data = treatment_dat)+
+  geom_line(aes(y=med, x=year, colour = "Modelled range", fill = "Modelled range",linetype = "Modelled range"))+
+  geom_ribbon(aes(ymin=y05, ymax=y95, x=year, fill="Modelled range"), alpha = 0.5) +
+  geom_line(aes(x=year, y = y05), color = "grey70") +
+  geom_line(aes(x=year, y = y95), color = "grey70")+
+  geom_point(data = obs_sumtreated,
+             aes(x = year, y = treated, color = "Observed",
+                 fill="Observed",linetype = "Observed"))+
+    facet_grid(suitability~decision_rule)+
+  scale_colour_manual(name='',
+                      values=c("Modelled range" = "blue",
+                               "Observed" = "red")) +
+  scale_fill_manual(name = '',
+                    values=c("Modelled range" = "grey70",
+                             "Observed" = "white"))+
+  scale_linetype_manual(name = '',
+                        values=c("Modelled range" = "solid",
+                                 "Observed" = "blank"))+
+      scale_x_continuous(breaks = 2005:2015)+
+  labs(y = expression(paste("Cumulative treatment capacity (",
+  m^2," of EIA)", sep="")))+
+    xlab('')+
+  theme(legend.margin=margin(t=-0.5, r=0, b=0.5, l=0, unit="cm"),
+        panel.grid.minor = element_blank(),
+        legend.position="bottom",
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        strip.background = element_blank(),
+        strip.text = element_text(face = "bold"))+
+    guides(colour = guide_legend(override.aes = list(shape=c(NA,16))))
+```
+
+
+
+#### 2.5 Simulations with Net Present Costs of observed expenditure with ewater pvcosts
+
+*2.5.1. Number of WSUDs with Net Present Costs instead of budget*
+
+```{r, eval = FALSE}
+pw <- {
+  "rejudo01"
+}
+
+drv <- dbDriver("PostgreSQL")
+con <- dbConnect(drv, dbname = "complex_agents",
+                 host = "www.dance4water.org", port = 5432,
+                 user = "postgres", password = pw)
+rm(pw) # removes the password
+
+# dbListFields(con, "kgn_council_test2")
+
+data_council_cost <- dbGetQuery(con, 'SELECT year, decision_rule, suitability, scenario_id, budget,sum_treated,raingarden ,wetland, pond, cum_wetland_area, cum_pond_area, cum_rg_area FROM kgn_council_pvcosts2112')
+invisible(dbDisconnect(con))
+
+subset_mod <- select(data_council_cost, decision_rule, year, scenario_id,suitability, raingarden,wetland,pond)
+melt.subset <- reshape2::melt(subset_mod, id=c("year", "decision_rule","scenario_id", "suitability"))
+
+melt.subset$suitability <- recode(melt.subset$suitability, 
+            "1" = "UrbanBeats",
+            "2" = "Random")
+
+# melt.subset$rule <- as.character(melt.subset$rule)
+
+melt.subset$decision_rule <- recode(melt.subset$decision_rule, 
+            "1" = "Rule 1",
+            "2" = "Rule 2",
+            "3" = "Rule 3",
+            "4" = "Rule 4")
+
+
+y <- c(2005,2005,2006,2006,2006,2006,2007,2007,2007,2007,2007,2007,2008,2009,2009,2012,2012)
+y_Df <- as.data.frame(y)
+y_c <- dplyr::count(x = y_Df,y)
+y <- c(2010,2011)
+n <-c(0,0)
+ndf <- data.frame(y = y,n = n)
+
+tb <- rbind(y_c,ndf)
+tb$y <- as.integer(tb$y)
+
+t <- arrange(tb,y)
+
+t$cum <- cumsum(t$n)
+
+nmr_dat <- group_by(melt.subset, year, decision_rule,suitability,variable)%>%
+  summarise(n = n(),med = median(value),y05=quantile(value, 0.05), y95=quantile(value, 0.95))
+
+nmr_dat$variable <- recode(nmr_dat$variable, 
+            "pond" = "Pond",
+            "raingarden" = "Raingarden",
+            "wetland" = "Wetland")
+
+ggplot(data = nmr_dat)+
+  geom_line(aes(y=med, x=year, colour = variable))+
+  geom_ribbon(aes(ymin=y05, ymax=y95, x=year, fill=variable), alpha = 0.5) +
+        facet_grid(suitability~decision_rule)+
+  geom_line(aes(x=year, y = y05, color = variable,linetype = "5th-95th")) +
+  geom_line(aes(x=year, y = y95, color = variable,linetype = "5th-95th"))+
+  geom_point(data = t,  aes(x = y, y = cum, shape = "Raingarden"), color = "#27AE60")+
+  scale_shape_manual(name='Observed:', 
+                      values=c("Raingarden" = 16)) +
+  scale_colour_manual(name='', 
+                      values=c("Pond" = "#73C6B6",
+                        "Raingarden" = "#27AE60",
+                               "Wetland" = "#2980B9")) +
+  scale_fill_manual(name='', 
+                      values=c("Pond" = "#73C6B6",
+                        "Raingarden" = "#27AE60",
+                               "Wetland" = "#2980B9"))+
+  scale_x_continuous(breaks = 2005:2015)+
+  labs(y = "Cumulative number of systems installed")+
+    xlab('')+
+  theme(
+    legend.margin=margin(t=-0.5, r=0, b=0.5, l=0, unit="cm"),
+        # plot.margin=unit(c(1, 1, -0.5, 0.5), units="line"),
+        panel.grid.minor = element_blank(),
+        legend.position="bottom",
+    legend.title.align = 0,
+    legend.box = "vertical",
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        strip.background = element_blank(),
+        strip.text = element_text(face = "bold"))+
+    guides(linetype = FALSE,
+           fill = guide_legend(title = "Modelled:"),
+           color = guide_legend(title = "Modelled:"))
+```
+
+
+
+*2.5.2 Treatment capacity with Net Present Costs instead of budget*
+
+```{r, eval = FALSE}
+
+
+treatment_dat <- select(data_council_cost, year, decision_rule, scenario_id ,suitability, sum_treated )%>%
+  filter(sum_treated > 0 )%>%
+  group_by( year, decision_rule,suitability)%>%
+  summarise(n = n(),med = median(sum_treated),y05=quantile(sum_treated, 0.05), y95=quantile(sum_treated, 0.95))
+
+treatment_dat$suitability <- recode(treatment_dat$suitability, 
+            "1" = "UrbanBeats",
+            "2" = "Random")
+
+treatment_dat$decision_rule <- recode(treatment_dat$decision_rule, 
+            "1" = "Rule 1",
+            "2" = "Rule 2",
+            "3" = "Rule 3",
+            "4" = "Rule 4")
+
+ggplot(data = treatment_dat)+
+  geom_line(aes(y=med, x=year, colour = "Modelled range", fill = "Modelled range",linetype = "Modelled range"))+
+  geom_ribbon(aes(ymin=y05, ymax=y95, x=year, fill="Modelled range"), alpha = 0.5) +
+  geom_line(aes(x=year, y = y05), color = "grey70") +
+  geom_line(aes(x=year, y = y95), color = "grey70")+
+  geom_point(data = obs_sumtreated,
+             aes(x = year, y = treated, color = "Observed",
+                 fill="Observed",linetype = "Observed"))+
+    facet_grid(suitability~decision_rule)+
+  scale_colour_manual(name='',
+                      values=c("Modelled range" = "blue",
+                               "Observed" = "red")) +
+  scale_fill_manual(name = '',
+                    values=c("Modelled range" = "grey70",
+                             "Observed" = "white"))+
+  scale_linetype_manual(name = '',
+                        values=c("Modelled range" = "solid",
+                                 "Observed" = "blank"))+
+      scale_x_continuous(breaks = 2005:2015)+
+  labs(y = expression(paste("Cumulative treatment capacity (",
+  m^2," of EIA)", sep="")))+
+    xlab('')+
+  theme(legend.margin=margin(t=-0.5, r=0, b=0.5, l=0, unit="cm"),
+        panel.grid.minor = element_blank(),
+        legend.position="bottom",
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        strip.background = element_blank(),
+        strip.text = element_text(face = "bold"))+
+    guides(colour = guide_legend(override.aes = list(shape=c(NA,16))))
+```
+
+\newpage
+
+
+#### 2.6. Location of WSUDs
+
+*2.6.1. 2d-Density*
+
+```{r}
+pw <- {
+  "rejudo01"
+}
+
+# loads the PostgreSQL driver
+drv <- dbDriver("PostgreSQL")
+# creates a connection to the postgres database
+# note that "con" will be used later in each connection to the database
+con <- dbConnect(drv, dbname = "complex_agents",
+                 host = "www.dance4water.org", port = 5432,
+                 user = "postgres", password = pw)
+rm(pw) # removes the password
+
+# check for the table
+# dbExistsTable(con, "monash_sim_wsud")
+
+wsuds = st_read_db(con, "kgn_wsud_pvcosts2112", query = "select * from wsud_points")
+invisible(dbDisconnect(con))
+wsuds_spat <-  as(wsuds, 'Spatial')
+
+data_wsuds <- spTransform(wsuds_spat, CRS("+proj=longlat +datum=WGS84"))
+a <- data_wsuds@data
+a$lon <- coordinates(data_wsuds)[,1]
+a$lat <-coordinates(data_wsuds)[,2]
+# data_wsuds.utm <- spTransform(data_wsuds, CRS("+proj=utm +zone=55S +datum=WGS84"))
+# a.utm <- data_wsuds.utm@data
+# a.utm$lon <- coordinates(data_wsuds.utm)[,1]
+# a.utm$lat <-coordinates(data_wsuds.utm)[,2]
+
+
+
+cityImport <- readOGR(dsn="//ad.monash.edu/home/User085/acharett/Desktop/ubuntu_shared/Kingston/polygons", layer="kgn_boundary", verbose = FALSE)
+cityTransformed <- spTransform(cityImport, CRS("+proj=longlat +datum=WGS84"))
+cityFortified <- fortify(cityTransformed)
+cityTransformed@data$id <- rownames(cityTransformed@data)
+cityJoined <- left_join(x = cityTransformed@data, y = cityFortified)
+
+a$suitability <- as.character(a$suitability)
+a$suitability <- recode(a$suitability,
+            "1" = "UrbanBeats",
+            "2" = "Random")
+
+a$rule <- as.character(a$rule)
+
+a$rule <- recode(a$rule, 
+            "1" = "Rule 1",
+            "2" = "Rule 2",
+            "3" = "Rule 3",
+            "4" = "Rule 4")
+
+observed_wsuds <- read.csv("//ad.monash.edu/home/User085/acharett/Desktop/ubuntu_shared/kgn_wsudspost2005.csv", header = TRUE)
+
+elwood <- get_map(location = c(lon = 145.099601, lat = -38.002002), zoom = 12,maptype = "toner-lite", messaging = FALSE)
+
+# elwood <- get_map(location = c(145.025213, -38.083770, 145.173954,-37.924567),  source="stamen", maptype="toner-lite", messaging = FALSE)
+
+ggmap(elwood)+
+  # geom_polygon(data = cityJoined, aes(x = long, y = lat, group = id), colour = "blue",
+  #              fill = NA, size = 0.3)+
+  geom_density2d(data = filter(a, year == 2012), aes(x = lon, y = lat), size = 0.3) +
+ 
+  stat_density2d(data = filter(a, year == 2012),
+                 aes(x = lon, y = lat, fill = ..level.., alpha = ..level..), size = 0.01,
+                 bins = 16, geom = "polygon") +
+    facet_grid(suitability ~ rule)+
+    labs(fill = "") +
+    coord_equal()+
+  scale_fill_gradient(name = "Modelled WSUD density",
+                      trans = "log10",
+                      low = "#04d004", high = "red")+
+  geom_point(data = observed_wsuds, aes(x = Longitude, y = Latitude), color = "red", size = 1, alpha=0.7)+
+
+    # scale_x_continuous(limits=c(145.025213, 145.173954))+
+    # scale_color_manual(values=c("Observed wsuds"= "red"),
+    #                    name="")+
+  # scale_alpha_manual(guide=FALSE)+
+  ggthemes::theme_map()+
+  theme(strip.background = element_blank(),
+        strip.text = element_text(face = "bold", size = 12),
+        plot.margin = unit(c(0,0,0,0), "lines"),
+        # legend.margin = unit(c(0,0,0,0), "lines"),
+        legend.position="bottom",
+        legend.box="vertical",
+        legend.direction = "horizontal",
+        legend.justification = "center",
+        legend.key = element_rect(colour = NA))+
+  guides(fill = guide_colorbar(nrow = 1 , label.position = "bottom",  barwidth  = 10), alpha = FALSE,
+         color = guide_legend(override.aes=list((fill=NA))))
+
+```
+
+\newpage
+
+
+<!-- *2.6.2. Heat map*  -->
+
+```{r, eval = FALSE}
+# my_breaks <-  c(1, 16, 160, 1600, 16000, 160000)
+ggmap(elwood)+
+  geom_polygon(data = cityJoined, aes(x = long, y = lat, group = id), colour = "blue",
+               fill = NA, size = 0.3)
+  
+   ggplot() +
+  geom_tile(data = filter(a, inst_year == 2012), aes(x = lon, y = lat , fill = basin_eia_treated))+
+  facet_grid(suitability ~ rule)+
+      labs(fill = "") +
+    coord_equal()+
+  scale_fill_continuous(trans = "log10")
+
+
+  # geom_density2d(data = a, aes(x = lon, y = lat), size = 0.3) + 
+  # stat_density2d(data = a, 
+  #                aes(x = lon, y = lat, fill = ..level.., alpha = ..level..), size = 0.01, 
+  #                bins = 16, geom = "polygon") + 
+  stat_density_2d(data = filter(a, inst_year == 2012), geom = "tile", aes(x = lon, y = lat,fill = ..density..), contour = FALSE, alpha=0.5)+
+    facet_grid(suitability ~ rule)+
+  scale_fill_continuous(trans = "log10")
+      scale_fill_gradient(name = "WSUD Density", trans="log10")
++
+  
+    scale_fill_gradient(name = "WSUD Density", 
+                        breaks = my_breaks, labels = my_breaks)+
+
+  # scale_fill_gradient(name = "WSUD Density", low = "#ffffb2", high = "#bd0026")+
+
+  geom_point(data = observed_wsuds, aes(x = Longitude, y = Latitude), color = "red", size = 1, alpha=0.7)+
+    labs(fill = "") +
+    coord_equal()+
+    scale_x_continuous(limits=c(145.025213, 145.173954))+
+    scale_color_manual(values=c("#a6cee3","#b2df8a", "#1f78b4"),
+                    labels = c("Pond","Raingarden", "Wetland"),
+                    name="",
+                    guide= FALSE)+
+  # scale_alpha_manual(guide=FALSE)+
+  ggthemes::theme_map()+
+  theme(strip.background = element_blank(),
+        strip.text = element_text(face = "bold", size = 12),
+        plot.margin = unit(c(0,0,0,0), "lines"),
+        legend.position = "bottom",
+        legend.direction = "horizontal",
+        legend.justification = "centre")+
+  guides(fill = guide_legend(nrow = 1 , label.position = "bottom",  barwidth  = 10), alpha = FALSE, color = FALSE)
+```
+
+```{r, eval = FALSE}
+# p <- ggplot(data = filter(a, inst_year == 2012), aes(x = lon, y = lat))
+
+
+ggmap(elwood) + 
+  stat_bin2d(data = filter(a, inst_year == 2012), aes(x = lon, y = lat), alpha)+
+  facet_grid(suitability ~ rule)+
+    labs(fill = "") +
+    coord_equal()+
+  scale_fill_gradient(name = "Modelled WSUD count",
+                      trans = "log10",
+                      low = "#FFFFE0", high = "red")+
+  geom_point(data = observed_wsuds, aes(x = Longitude, y = Latitude), color = "red", size = 1, alpha=0.7)+
+
+    # scale_x_continuous(limits=c(145.025213, 145.173954))+
+    # scale_color_manual(values=c("Observed wsuds"= "red"),
+    #                    name="")+
+  # scale_alpha_manual(guide=FALSE)+
+  ggthemes::theme_map()+
+  theme(strip.background = element_blank(),
+        strip.text = element_text(face = "bold", size = 12),
+        plot.margin = unit(c(0,0,0,0), "lines"),
+        # legend.margin = unit(c(0,0,0,0), "lines"),
+        legend.position="bottom",
+        legend.box="vertical",
+        legend.direction = "horizontal",
+        legend.justification = "center",
+        legend.key = element_rect(colour = NA))+
+  guides(fill = guide_colorbar(nrow = 1 , label.position = "bottom",  barwidth  = 10), alpha = FALSE,
+         color = guide_legend(override.aes=list((fill=NA))))
+  
+
+```
+
+*2.6.2. Frequency by block*
+
+```{r}
+path <- "//ad.monash.edu/home/User085/acharett/Desktop/ubuntu_shared/block_kgn.sqlite"
+
+block<-readOGR(dsn=path,layer="block_kgn", verbose = FALSE)
+
+blockTransformed <- spTransform(block, CRS("+proj=longlat +datum=WGS84"))
+blockFortified <- fortify(blockTransformed)
+blockTransformed@data$id <- rownames(blockTransformed@data)
+blockJoined <- left_join(x = blockTransformed@data, y = blockFortified)
+
+blocks <- blockJoined 
+
+
+
+# block$scenario_id <- as.character(block$scenario_id)
+# block$scenario_id <- recode(block$scenario_id, 
+#             "1" = "UrbanBeats",
+#             "2" = "Random")
+# 
+# block$decision_rule <- as.character(block$decision_rule)
+# 
+# block$decision_rule <- recode(block$decision_rule, 
+#             "1" = "Rule 1",
+#             "2" = "Rule 2",
+#             "3" = "Rule 3",
+#             "4" = "Rule 4")
+
+wsud_count <-wsuds %>% filter(inst_year == 2012) %>%
+  dplyr::count(rule, suitability, technology,block_id) 
+  
+wsud_count_df <- as.data.frame(wsud_count)         
+wsud_count_df_sub <-wsud_count_df %>% 
+  select(rule, suitability, technology, block_id , n) 
+
+joined_block <- blocks %>% full_join(wsud_count_df_sub, by = c("ogc_fid0" = "block_id"))
+
+joined_block$suitability <- as.character(joined_block$suitability)
+joined_block$suitability <- recode(joined_block$suitability,
+            "1" = "UrbanBeats",
+            "2" = "Random")
+
+joined_block$rule <- as.character(joined_block$rule)
+
+joined_block$rule <- recode(joined_block$rule,
+            "1" = "Rule 1",
+            "2" = "Rule 2",
+            "3" = "Rule 3",
+            "4" = "Rule 4")
+
+elwood <- get_map(location = c(lon = 145.099601, lat = -38.002002), zoom = 12,maptype = "toner-lite", messaging = FALSE)
+
+ggmap(elwood) +
+  geom_polygon(data = select(joined_block, long, lat, id), aes(x = long, y = lat, group = id), fill = "#D3D3D3", color = "#d3d3d3", size = 0.001, alpha= 0.4)+
+  geom_polygon(data = na.omit(joined_block), aes(x = long, y = lat, group = id,
+                                    fill = n), color = "black", size = 0.01, alpha= 0.7)+
+    geom_point(data = observed_wsuds, aes(x = Longitude, y = Latitude), color = "red", size = 1, alpha=0.7)+
+
+
+  # geom_polygon(data = cityJoined, aes(x = long, y = lat, group = id), colour = "black",
+  #              fill = NA, size = 1.5)+
+  # geom_point(data = a, aes(x = lon, y = lat, color = technology), size = 2, alpha=0.7)+
+  labs(fill = "") +
+  coord_equal()+  
+  facet_grid(suitability~rule)+
+  scale_x_continuous(limits=c(145.025213, 145.173954))+
+  # scale_fill_continuous(trans = "log10")
+  
+  scale_fill_distiller(name = "WSUD frequency",
+                       palette = "YlOrRd", 
+                       direction = 1,
+                       trans = "log10",
+                       na.value = "black"                       # breaks = pretty_breaks(n = 6)
+                       )+
+
+  ggthemes::theme_map()+
+  theme(plot.margin = unit(c(0,0,0,0), "lines"),
+        legend.position="bottom",
+        legend.direction="horizontal",
+        legend.justification="center",
+        strip.background = element_blank(),
+        strip.text = element_text(face = "bold", size = 12))+
+  guides(fill = guide_colorbar(nrow = 1 , label.position = "bottom",  barwidth  = 10,
+title = "WSUD frequency",reverse = FALSE))
+
+
+```
+
+\newpage
+
+**New UB results**
+
+
+
+![](new_UB_results.png)
+
+\newpage
+
+*2.6.3. Inverse distance weighting*
+
+![](predicted_treated_area.png)
+
+
+\newpage
+
+
+
+
+
+
+
+### 3. Benefit assessment
+
+
+```{r basins treated,fig.align="center", eval = FALSE}
+pw <- {
+  "rejudo01"
+}
+
+# loads the PostgreSQL driver
+drv <- dbDriver("PostgreSQL")
+# creates a connection to the postgres database
+# note that "con" will be used later in each connection to the database
+con <- dbConnect(drv, dbname = "complex_agents",
+                 host = "www.dance4water.org", port = 5432,
+                 user = "postgres", password = pw)
+rm(pw) # removes the password
+
+# check for the table
+# dbExistsTable(con, "monash_sim_wsud")
+
+basin = st_read_db(con, "kgn_basin_v10", query = "select * from basin")
+invisible(dbDisconnect(con))
+
+sub_basin <- select(basin,basin_id, year, percent_treated )%>%
+  group_by( year,basin_id)%>%
+  summarise(n = n(),mean = mean(percent_treated),SE=sd(percent_treated)/sqrt(n()))
+
+ggplot(data = sub_basin,aes(x = year, y = mean))+
+  geom_pointrange(aes(ymin = mean-SE, ymax = mean+SE, colour = factor(basin_id)),size = 1, fatten=1)+
+  geom_line(aes(colour = factor(basin_id)))+
+  scale_y_log10(name = "Treated basins (%)")+
+
+  xlab('')+
+  scale_colour_brewer(name = "Basins",palette = "Set1")+
+  theme(panel.grid.minor = element_blank(),
+        strip.background = element_blank(),
+        strip.text = element_text(face = "bold", size = 12),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position="bottom")+
+        # legend.margin=margin(t = -0.5, unit='cm'),
+        # plot.margin = unit(c(0,0,0,0), "lines"))
+
+  guides(colour = guide_legend(nrow = 1, override.aes = list(size=c(0.5,0.5))))
+```
+
+3.1. Nitrogen removal, valuation and costs
+
+```{r, fig.height=6}
+nrem_dat <- select(data_council, year, decision_rule, scenario_id ,suitability, total_n_removed)%>%
+  group_by( year, decision_rule,suitability)%>%
+  summarise(n = n(),med = median(total_n_removed),y05=quantile(total_n_removed, 0.05), y95=quantile(total_n_removed, 0.95))
+
+benifit_dat <- select(data_council, year, decision_rule, scenario_id ,suitability, total_benefits)%>%
+  group_by( year, decision_rule,suitability)%>%
+  summarise(n = n(),med = median(total_benefits),y05=quantile(total_benefits, 0.05), y95=quantile(total_benefits, 0.95))
+
+cost_dat <- select(data_council, year, decision_rule, scenario_id ,suitability, total_costs)%>%
+  group_by( year, decision_rule,suitability)%>%
+  summarise(n = n(),med = median(total_costs),y05=quantile(total_costs, 0.05), y95=quantile(total_costs, 0.95))
+
+npv_dat <- select(data_council, year, decision_rule, scenario_id ,suitability, total_npv)%>%
+  group_by( year, decision_rule,suitability)%>%
+  summarise(n = n(),med = median(total_npv),y05=quantile(total_npv, 0.05), y95=quantile(total_npv, 0.95))
+
+npv_dat$value <- "NPV ('000 AUD)"
+npv_dat$med <- npv_dat$med/1000
+npv_dat$y05 <- npv_dat$y05/1000
+npv_dat$y95 <- npv_dat$y95/1000
+
+cost_dat$value <- "Cost ('000 AUD)"
+cost_dat$med <- cost_dat$med/1000
+cost_dat$y05 <- cost_dat$y05/1000
+cost_dat$y95 <- cost_dat$y95/1000
+benifit_dat$value <- "Benefit ('000 AUD)"
+benifit_dat$med <- benifit_dat$med/1000
+benifit_dat$y05 <- benifit_dat$y05/1000
+benifit_dat$y95 <- benifit_dat$y95/1000
+nrem_dat$value <- "Nitrogen removed (kg)"
+
+all_dat <- rbind(npv_dat,cost_dat,benifit_dat,nrem_dat)
+
+all_dat$value <- factor(all_dat$value)
+all_dat$value <- factor(all_dat$value,levels = c("Nitrogen removed (kg)",
+                            "Benefit ('000 AUD)",
+                            "Cost ('000 AUD)",
+                            "NPV ('000 AUD)"))
+
+
+
+all_dat$suitability <- recode(all_dat$suitability, 
+            "1" = "UrbanBeats",
+            "2" = "Random")
+
+all_dat$decision_rule <- recode(all_dat$decision_rule, 
+            "1" = "Rule 1",
+            "2" = "Rule 2",
+            "3" = "Rule 3",
+            "4" = "Rule 4")
+
+ggplot(data = all_dat)+
+  geom_line(aes(y=med, x=year, colour = suitability, fill = suitability,linetype = "Median"))+ 
+  geom_ribbon(aes(ymin=y05, ymax=y95, x=year, fill=suitability), alpha = 0.6) +
+  geom_line(aes(x=year, y = y05, color = suitability,linetype = "5th-95th")) +
+  geom_line(aes(x=year, y = y95, color = suitability,linetype = "5th-95th"))+
+
+  facet_grid(value~decision_rule, scale = "free", switch = 'y')+
+  scale_colour_manual(name = '',  
+                    values=c("Random" = "#2c7bb6",
+                             "UrbanBeats" = "#d7191c")) +
+  scale_fill_manual(name = '',  
+                    values=c("Random" = "#2c7bb6",
+                             "UrbanBeats" = "#d7191c"))+
+      scale_x_continuous(name = '', breaks = 2005:2015)+
+    scale_y_continuous(name = "")+
+  theme_classic()+
+    annotate("segment", x=-Inf, xend=Inf, y=-Inf, yend=-Inf)+
+  annotate("segment", x=-Inf, xend=-Inf, y=-Inf, yend=Inf)+
+  theme(legend.margin=margin(t=-0.5, r=0, b=0.5, l=0, unit="cm"),
+        # plot.margin=unit(c(-1.5, 0, -0.5, 0), units="line"),
+        panel.grid.minor = element_blank(),
+        legend.position="bottom",
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        strip.background = element_blank(),
+    strip.text.y = element_text(margin = margin(t = 0, r = 35, b = 0, l = -42)),
+            strip.text.x = element_text(face = "bold"))+    guides(linetype = FALSE)
+```
+
+<!-- # 3.2 NPV range with outliers -->
+```{r, eval = FALSE, fig.align="center"}
+wdf <- as.data.frame(wsuds)
+
+wdf$suitability <- as.character(wdf$suitability)
+wdf$suitability <- recode(wdf$suitability,
+            "1" = "UrbanBeats suitability",
+            "2" = "Random suitability")
+
+wdf$rule <- recode(wdf$rule, 
+            "1" = "Rule 1",
+            "2" = "Rule 2",
+            "3" = "Rule 3",
+            "4" = "Rule 4")
+
+ggplot(wdf, aes(as.character(inst_year),  npv/1000)) + 
+    geom_hline(yintercept = -0.1, color = 'red', linetype = "dashed") +
+  geom_boxplot(aes(fill = as.factor(suitability)), outlier.size=0.5, outlier.stroke = 0.2, lwd=0.1, alpha = 0.6) +
+  # scale_y_continuous(limits = quantile(wdf$npv/1000, c(0.1, 0.9)))+
+  # scale_y_log10()+
+  labs(x = "", y = "Net Present Value ('000 AUD)") +
+  facet_grid(.~rule)+ 
+  scale_fill_manual(name = '',  
+                    values=c("Random suitability" = "#2c7bb6",
+                             "UrbanBeats suitability" = "#d7191c"))+
+  theme(legend.margin=margin(t=-0.5, r=0, b=0.5, l=0, unit="cm"),
+        # plot.margin=unit(c(-1.5, 0, -0.5, 0), units="line"),
+        panel.grid.minor = element_blank(),
+        legend.position="bottom",
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        strip.background = element_blank(),
+        strip.text.x = element_text(face = "bold"))+    
+  guides(linetype = FALSE)
+ggsave(file="paper2/NPV_range_outliers.png", dpi=300, width = 8, height =4)
+```
+
+\newpage
+
+3.3 NPV range without outliers with costs
+
+```{r}
+wdf <- as.data.frame(wsuds)
+
+wdf$suitability <- as.character(wdf$suitability)
+wdf$suitability <- recode(wdf$suitability,
+            "1" = "UrbanBeats suitability",
+            "2" = "Random suitability")
+
+wdf$rule <- recode(wdf$rule, 
+            "1" = "Rule 1",
+            "2" = "Rule 2",
+            "3" = "Rule 3",
+            "4" = "Rule 4")
+
+ggplot(wdf, aes(as.character(inst_year),  npv/1000)) + 
+  geom_boxplot(aes(fill = as.factor(suitability)),outlier.shape = NA, outlier.size=0.5, outlier.stroke = 0.2, lwd=0.1, alpha = 0.5) +
+  geom_hline(yintercept = 0, color = 'red', linetype = "dashed") + 
+  scale_y_continuous(limits = quantile(wdf$npv/1000, c(0.1, 0.9)))+
+  labs(x = "", y = "Net Present Value ('000 AUD)") +
+  facet_grid(.~rule)+ 
+  scale_fill_manual(name = '',  
+                    values=c("Random suitability" = "#2c7bb6",
+                             "UrbanBeats suitability" = "#d7191c"))+
+  theme(legend.margin=margin(t=-0.5, r=0, b=0.5, l=0, unit="cm"),
+        # plot.margin=unit(c(-1.5, 0, -0.5, 0), units="line"),
+        panel.grid.minor = element_blank(),
+        legend.position="bottom",
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        strip.background = element_blank(),
+        strip.text.x = element_text(face = "bold"))+    
+  guides(linetype = FALSE)
+```
+
+\newpage
+
+3.3 NPV range without outliers with budget
+
+```{r}
+pw <- {
+  "rejudo01"
+}
+
+# loads the PostgreSQL driver
+drv <- dbDriver("PostgreSQL")
+# creates a connection to the postgres database
+# note that "con" will be used later in each connection to the database
+con <- dbConnect(drv, dbname = "complex_agents",
+                 host = "www.dance4water.org", port = 5432,
+                 user = "postgres", password = pw)
+rm(pw) # removes the password
+
+# check for the table
+# dbExistsTable(con, "monash_sim_wsud")
+
+wsuds = st_read_db(con, "kgn_wsud_v10", query = "select * from wsud_points")
+wdf <- as.data.frame(wsuds)
+
+wdf$suitability <- as.character(wdf$suitability)
+wdf$suitability <- recode(wdf$suitability,
+            "1" = "UrbanBeats suitability",
+            "2" = "Random suitability")
+
+wdf$rule <- recode(wdf$rule, 
+            "1" = "Rule 1",
+            "2" = "Rule 2",
+            "3" = "Rule 3",
+            "4" = "Rule 4")
+
+ggplot(wdf, aes(as.character(inst_year),  npv/1000)) + 
+  geom_boxplot(aes(fill = as.factor(suitability)),outlier.shape = NA, outlier.size=0.5, outlier.stroke = 0.2, lwd=0.1, alpha = 0.5) +
+  geom_hline(yintercept = 0, color = 'red', linetype = "dashed") + 
+  scale_y_continuous(limits = quantile(wdf$npv/1000, c(0.1, 0.9)))+
+  labs(x = "", y = "Net Present Value ('000 AUD)") +
+  facet_grid(.~rule)+ 
+  scale_fill_manual(name = '',  
+                    values=c("Random suitability" = "#2c7bb6",
+                             "UrbanBeats suitability" = "#d7191c"))+
+  theme(legend.margin=margin(t=-0.5, r=0, b=0.5, l=0, unit="cm"),
+        # plot.margin=unit(c(-1.5, 0, -0.5, 0), units="line"),
+        panel.grid.minor = element_blank(),
+        legend.position="bottom",
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        strip.background = element_blank(),
+        strip.text.x = element_text(face = "bold"))+    
+  guides(linetype = FALSE)
+```
+
+
+```{r, eval = FALSE}
+# lay <- rbind(c(1,2),
+#              c(3,4))
+# plot = gridExtra::arrangeGrob(p1, p2, p3,p4, layout_matrix = lay)
+# # ggsave(plot, file="wsud_uptake/nitrogen_removal_all_rules.png", dpi=300, width = 7, height =4.5)
+# 
+# 
+
+sub_wsuds <- select(data_council, year, decision_rule, scenario_id ,suitability  , total_npv )%>%
+  group_by( year, decision_rule,suitability)%>%
+  summarise(n = n(),mean = mean(total_npv),SE=sd(total_npv)/sqrt(n()))
+
+sub_wsuds$suitability <- as.character(sub_wsuds$suitability)
+sub_wsuds$suitability <- recode(sub_wsuds$suitability, 
+            "1" = "UrbanBeats",
+            "2" = "Random")
+
+sub_wsuds$decision_rule <- as.character(sub_wsuds$decision_rule)
+
+sub_wsuds$decision_rule <- recode(sub_wsuds$decision_rule, 
+            "1" = "Rule 1",
+            "2" = "Rule 2",
+            "3" = "Rule 3",
+            "4" = "Rule 4")
+
+
+ggplot(data = sub_wsuds, aes(x = year, y = mean))+
+  geom_line(aes(colour = suitability))+
+  geom_pointrange(aes(ymin = mean-SE, ymax = mean+SE, colour = suitability),size = 1, fatten=1)+
+  facet_grid(.~decision_rule)+
+  scale_x_continuous(breaks = 2005:2015)+
+  labs(y = "Total NPV", x ='')+
+  scale_colour_brewer(name = "Suitability",palette = "Set1")+
+  theme(panel.grid.minor = element_blank(),
+        legend.position="bottom",
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        strip.background = element_blank(),
+        strip.text = element_text(face = "bold"))+
+    guides(colour = guide_legend(override.aes = list(size=c(0.5,0.5))))
+
+
+```
+
+
+```{r, eval = FALSE}
+
+all_rules_gat <- data_council %>%
+  select(year, decision_rule,scenario_id, total_n_removed, total_pv_costs, total_pv_benefits, total_npv) %>%
+  tidyr::gather(key, value, -year, -decision_rule, -scenario_id)
+
+
+all_rules_gat$key <- recode(all_rules_gat$key, total_n_removed = "N removed (Kg)",
+                            total_npv = "Total NPV ($)",
+                            total_pv_benefits = "NPV benefit ($)",
+                            total_pv_costs = "NPV cost ($)")
+
+ggplot(all_rules_gat, aes(x = year, y = value, color = factor(decision_rule)))+
+  geom_line(size = 1.025,aes(linetype = factor(scenario_id)))+
+  geom_point()+
+  facet_wrap(~key, ncol = 2, scales = "free_y")+
+  
+  scale_x_continuous(breaks = 2005:2012)+
+  theme(panel.grid.minor = element_blank(), 
+
+        legend.position="bottom",
+        strip.background = element_blank(),
+        strip.text = element_text(face = "bold"))+
+
+  scale_colour_brewer(name = "", type = "qual", palette = 6, direction = 1)+
+  scale_linetype(name = "")+
+  labs(y="", x = "")
+# ggsave(facet_plot, file="wsud_uptake/faceted_nitrogen_removal_all_rules.png", dpi=300, width = 8.5, height =5)
+```
+
+
+```{r, eval = FALSE}
+cityImport <- readOGR(dsn="//ad.monash.edu/home/User085/acharett/Desktop/ubuntu_shared/Monash/Kingston/polygons", layer="kgn_boundary", verbose = FALSE)
+cityTransformed <- spTransform(cityImport, CRS("+proj=longlat +datum=WGS84"))
+cityFortified <- fortify(cityTransformed)
+cityTransformed@data$id <- rownames(cityTransformed@data)
+cityJoined <- left_join(x = cityTransformed@data, y = cityFortified)
+
+
+pw <- {
+  "rejudo01"
+}
+
+# loads the PostgreSQL driver
+drv <- dbDriver("PostgreSQL")
+# creates a connection to the postgres database
+# note that "con" will be used later in each connection to the database
+con <- dbConnect(drv, dbname = "complex_agents",
+                 host = "www.dance4water.org", port = 5432,
+                 user = "postgres", password = pw)
+rm(pw) # removes the password
+
+# check for the table
+# dbExistsTable(con, "monash_sim_wsud")
+
+x = st_read_db(con, "kgn_basin_v5", query = "select * from basin")
+invisible(dbDisconnect(con))
+
+x$scenario_id <- as.character(x$scenario_id)
+x$scenario_id <- recode(x$scenario_id, 
+            "1" = "UrbanBeats",
+            "2" = "Random")
+
+x$decision_rule <- as.character(x$decision_rule)
+
+x$decision_rule <- recode(x$decision_rule, 
+            "1" = "Rule 1",
+            "2" = "Rule 2",
+            "3" = "Rule 3",
+            "4" = "Rule 4")
+
+x2 <-  as(x, 'Spatial')
+
+basinsTrans <- spTransform(x2, CRS("+proj=longlat +datum=WGS84"))
+basinFortified <- fortify(basinsTrans)
+basinsTrans@data$id <- rownames(basinsTrans@data)
+basinJoined <- left_join(x = basinsTrans@data, y = basinFortified)
+```
+
+```{r, eval = FALSE}
+basin_data <- x2@data
+# library("colorspace")
+# pal <- choose_palette()
+
+plot<-ggplot(data = basin_data)+
+  geom_line(data = basin_data, 
+            aes(x = year,
+                y = percent_treated, 
+                color = factor(decision_rule)),
+            size = 1.05)+
+  facet_grid(basin_id~scenario_id)+
+  scale_x_continuous(breaks = 2005:2015)+
+  labs(y = "Treated basins (%)", x ='')+
+  scale_colour_brewer(name = "",palette = "Set1")+
+  theme(panel.grid.minor = element_blank(),
+        strip.background = element_blank(),
+        strip.text = element_text(face = "bold", size = 12),
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position="bottom", 
+        legend.margin=margin(t = -0.5, unit='cm'),
+        plot.margin = unit(c(0,0,0,0), "lines"))+
+  guides(colour = guide_legend(nrow = 1))
+plot
+
+```
+
+3.2. Treatment path and accumulation
+
+```{r flow, fig.width = 14, eval = FALSE}
+pw <- {
+  "rejudo01"
+}
+
+# loads the PostgreSQL driver
+drv <- dbDriver("PostgreSQL")
+# creates a connection to the postgres database
+# note that "con" will be used later in each connection to the database
+con <- dbConnect(drv, dbname = "complex_agents",
+                 host = "www.dance4water.org", port = 5432,
+                 user = "postgres", password = pw)
+rm(pw) # removes the password
+
+# check for the table
+# dbExistsTable(con, "monash_sim_wsud")
+
+x = st_read_db(con, "kgn_flow_0411", query = "select * from wsud_flow")
+invisible(dbDisconnect(con))
+
+x <- filter(x, year == 2012)
+
+x$scenario_id <- as.character(x$scenario_id)
+x$scenario_id <- recode(x$scenario_id, 
+            "1" = "UrbanBeats",
+            "2" = "Random")
+
+x$decision_rule <- as.character(x$decision_rule)
+
+x$decision_rule <- recode(x$decision_rule, 
+            "1" = "Rule 1",
+            "2" = "Rule 2",
+            "3" = "Rule 3",
+            "4" = "Rule 4")
+
+
+x2 <-  as(x, 'Spatial')
+# class(x2)
+
+flowTransformed <- spTransform(x2, CRS("+proj=longlat +datum=WGS84"))
+flowFortified <- fortify(flowTransformed)
+flowTransformed@data$id <- rownames(flowTransformed@data)
+flowJoined <- left_join(x = flowTransformed@data, y = flowFortified)
+
+# Import city boundary
+cityImport <- readOGR(dsn="//ad.monash.edu/home/User085/acharett/Desktop/ubuntu_shared/Monash/Kingston/polygons", layer="kgn_boundary", verbose = FALSE)
+cityTransformed <- spTransform(cityImport, CRS("+proj=longlat +datum=WGS84"))
+cityFortified <- fortify(cityTransformed)
+cityTransformed@data$id <- rownames(cityTransformed@data)
+cityJoined <- left_join(x = cityTransformed@data, y = cityFortified)
+
+# waterwayImport <- readOGR(dsn="//ad.monash.edu/home/User085/acharett/Desktop/ubuntu_shared/SDM378541/layer", layer="melbourne_waterways", verbose = FALSE)
+# waterwayTransformed <- spTransform(waterwayImport, CRS("+proj=longlat +datum=WGS84"))
+# waterwayFortified <- fortify(waterwayTransformed)
+# waterwayTransformed@data$id <- rownames(waterwayTransformed@data)
+# waterwayJoined <- left_join(x = waterwayTransformed@data, y = waterwayFortified)
+
+colnames(a)[6] <- "decision_rule"
+
+elwood <- get_map(location = c(lon = 145.099601, lat = -38.002002), zoom = 12,maptype = "toner-lite", messaging = FALSE)
+
+ggmap(elwood) +
+
+  geom_path(data=flowJoined,
+            aes(size=treated_catchment,x=long,y=lat,group=group),color="blue")+
+  # labs(x="",y="")+
+  # geom_path(data=waterwayJoined,
+  #           aes(x=long,y=lat,group=group, colour="Waterways"),size=1.5, alpha = 0.5)+
+  geom_polygon(data = cityJoined, aes(x = long, y = lat, group = id), colour = "black",
+               fill = NA, size = 1.5)+
+  geom_point(data = a, aes(x = lon, y = lat, color = technology), size = 2, alpha=0.7)+
+  labs(fill = "") +
+  coord_equal()+  
+  facet_grid(scenario_id~decision_rule)+
+  scale_x_continuous(limits=c(145.025213, 145.173954))+
+  scale_color_manual(values=c("#a6cee3","#b2df8a", "#1f78b4"),
+                    labels = c("Pond","Raingarden", "Wetland"),
+                    name="",
+                    guide=FALSE)+
+  scale_size_continuous(name='', range = c(0, 2),
+                        breaks = scales::pretty_breaks(n = 6))+
+  
+  ggthemes::theme_map()+
+  theme(plot.margin = unit(c(0,0,0,0), "lines"),
+        legend.position=c(-0.23,0),
+        strip.background = element_blank(),
+        strip.text = element_text(face = "bold", size = 12))+
+  guides(size = guide_legend(title = expression(paste("Treated impervious area (",m^2,")")),reverse = TRUE))
+      # guides(size = guide_legend(title = expression(paste("Drained impervious\narea (m^2)"), sep=''),reverse = TRUE))+
+# ggsave("paper2/treated_catchment.png", width = 20, height =10,  dpi =400)
+```
+
+
+### 4. Sensitivity assessment
+
+
+```{r, eval = FALSE}
+pw <- {
+  "rejudo01"
+}
+
+drv <- dbDriver("PostgreSQL")
+con <- dbConnect(drv, dbname = "complex_agents",
+                 host = "www.dance4water.org", port = 5432,
+                 user = "postgres", password = pw)
+rm(pw) # removes the password
+
+# dbListFields(con, "kgn_council_sensitivity")
+
+# data_council_sens <- dbGetQuery(con, 'SELECT year, suitability, scenario_id, budget, gaz_lga,ogc_fid,  total_n_removed, total_benefits, total_costs, raingarden ,wetland, pond, total_pv_costs, total_pv_benefits, total_npv,  decision_rule,cum_wetland_area, cum_pond_area, cum_rg_area, sum_treated, offset_scenario, expected_removal, budget FROM kgn_council_sensitivity')
+data_council_sens <- dbGetQuery(con, 'SELECT budget, catchment_treated, total_n_removed, total_npv, sum_treated, offset_scenario, expected_removal FROM kgn_council_sensitivity')
+invisible(dbDisconnect(con))
+
+ggscatmat(data_council_sens, alpha = 0.01, corMethod = "spearman")+stat_smooth(method = "lm")+ 
+
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 4))+
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 4))+
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),text = element_text(size=7),
+        axis.text=element_text(size=6, colour = "black"),
+        # axis.text.x = element_text(colour = "black"),
+        # legend.title	= element_text(size=8),
+        # legend.position="bottom",
+        # legend.margin=unit(-0.2,"cm"),
+          # legend.key = element_rect(colour = NA),
+        strip.background = element_blank(),
+        strip.text = element_text(size = 7, face = "bold")) 
+
+library("rbokeh")
+
+tools <- c("pan", "wheel_zoom", "box_zoom", "box_select", "reset")
+
+
+nms <- expand.grid(names(data_council_sens)[1:4], rev(names(data_council_sens)[1:4]), stringsAsFactors = FALSE)
+splom_list <- vector("list", 16)
+for(ii in seq_len(nrow(nms))) {
+  splom_list[[ii]] <- figure(width = 200, height = 200, tools = tools,
+    xlab = nms$Var1[ii], ylab = nms$Var2[ii]) %>%
+    ly_points(nms$Var1[ii], nms$Var2[ii], data = data_council_sens,
+      size = 1, legend = FALSE)
+}
+grid_plot(splom_list, ncol = 4, same_axes = FALSE, link_data = TRUE)
+
+
+m <- ggplot(faithful, aes(x = eruptions, y = waiting))  +
+ xlim(0.5, 6) +
+ ylim(40, 110) + geom_density_2d()
+m + stat_density_2d(aes(fill = ..level..), geom = "polygon", adjust = 0.5)+
+ geom_point()
+
+```
